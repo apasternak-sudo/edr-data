@@ -24,10 +24,29 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Download & Split Registry Chunks
+      - name: Download & Clean Encoding & Split Registry
         run: |
           python -c "
-          import requests, json, os, re
+          import requests, json, os, re, html
+
+          def clean_text(raw):
+              if not raw: return ''
+              s = str(raw)
+              
+              # 1. Спроба відновлення битого CP1251 (Mojibake)
+              try:
+                  s = s.encode('raw_unicode_escape').decode('cp1251')
+              except Exception:
+                  pass
+
+              # 2. Заміна спец-артефактів Мін'юсту
+              s = re.sub(r'22[ТT]|18[ТT]', '«', s)
+              s = html.unescape(s)
+              
+              # 3. Прибираємо невидимі та керуючі символи
+              s = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', s)
+              s = re.sub(r'\s+', ' ', s).strip()
+              return s
 
           def parse_reg(raw):
               if not raw: return '', ''
@@ -37,7 +56,7 @@ jobs:
               return date, num
 
           url = 'https://github.com/apasternak-sudo/edr-data/releases/download/v1.0.0/edr_registry.ndjson'
-          print('Downloading registry file...')
+          print('Downloading and fixing encoding...')
           
           response = requests.get(url, stream=True)
           os.makedirs('edr_chunks', exist_ok=True)
@@ -57,13 +76,13 @@ jobs:
 
                   clean_rec = {
                       'id': eid,
-                      'name': rec.get('name', ''),
-                      'short_name': rec.get('short_name', ''),
-                      'status': rec.get('status', '') or 'Зареєстровано',
+                      'name': clean_text(rec.get('name', '')),
+                      'short_name': clean_text(rec.get('short_name', '')),
+                      'status': clean_text(rec.get('status', '')) or 'Зареєстровано',
                       'registration_date': reg_date,
                       'registration_number': reg_num,
-                      'founders': rec.get('founders', []),
-                      'signers': rec.get('signers', []),
+                      'founders': [clean_text(f) for f in rec.get('founders', []) if clean_text(f)],
+                      'signers': [clean_text(s) for s in rec.get('signers', []) if clean_text(s)],
                       'tax_data': rec.get('tax_data', [])
                   }
                   
@@ -79,7 +98,7 @@ jobs:
           for fp in files.values():
               fp.close()
 
-          print(f'Done! Successfully processed {count} records into chunks.')
+          print(f'Done! Successfully cleaned and split {count} records.')
           "
 
       - name: Deploy to gh-pages branch
