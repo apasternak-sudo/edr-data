@@ -22,40 +22,22 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install requests ftfy
+        run: pip install requests
 
-      - name: Download, Fix Encoding & Split Registry
+      - name: Download & Split Registry Chunks
         run: |
           python -c "
-          import requests, json, os, re, html
-          import ftfy
+          import requests, json, os, re
 
-          def fix_text(text):
-              if not text: return ''
-              s = str(text)
-              # 1. Виправляємо бите кодування (Mojibake / CP1251)
-              s = ftfy.fix_text(s)
-              s = html.unescape(s)
-              # 2. Замінюємо спецартефакти Мін'юсту (22Т -> «, і т.д.)
-              s = re.sub(r'22[ТT]|18[ТT]', '«', s)
-              s = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', s) # Прибираємо недруковані символи
-              s = re.sub(r'\s+', ' ', s).strip()
-              return s
-
-          def parse_reg(raw_reg):
-              if not raw_reg: return '', ''
-              # Прибираємо дублікати дат '22.07.2026; 22.07.2026; 101088...'
-              parts = [p.trim() for p in str(raw_reg).split(';') if p.strip()]
-              unique_parts = []
-              for p in parts:
-                  if p not in unique_parts: unique_parts.append(p)
-              
-              date = unique_parts[0] if len(unique_parts) > 0 else ''
-              num = unique_parts[-1] if len(unique_parts) > 1 else ''
+          def parse_reg(raw):
+              if not raw: return '', ''
+              parts = [p.strip() for p in str(raw).split(';') if p.strip()]
+              date = parts[0] if parts else ''
+              num = parts[-1] if len(parts) > 1 else ''
               return date, num
 
           url = 'https://github.com/apasternak-sudo/edr-data/releases/download/v1.0.0/edr_registry.ndjson'
-          print('Downloading and cleaning registry...')
+          print('Downloading registry file...')
           
           response = requests.get(url, stream=True)
           os.makedirs('edr_chunks', exist_ok=True)
@@ -75,13 +57,13 @@ jobs:
 
                   clean_rec = {
                       'id': eid,
-                      'name': fix_text(rec.get('name', '')),
-                      'short_name': fix_text(rec.get('short_name', '')),
-                      'status': fix_text(rec.get('status', '')) or 'Зареєстровано',
+                      'name': rec.get('name', ''),
+                      'short_name': rec.get('short_name', ''),
+                      'status': rec.get('status', '') or 'Зареєстровано',
                       'registration_date': reg_date,
                       'registration_number': reg_num,
-                      'founders': [fix_text(f) for f in rec.get('founders', []) if fix_text(f)],
-                      'signers': [fix_text(s) for s in rec.get('signers', []) if fix_text(s)],
+                      'founders': rec.get('founders', []),
+                      'signers': rec.get('signers', []),
                       'tax_data': rec.get('tax_data', [])
                   }
                   
@@ -97,7 +79,7 @@ jobs:
           for fp in files.values():
               fp.close()
 
-          print(f'Done! Processed {count} records.')
+          print(f'Done! Successfully processed {count} records into chunks.')
           "
 
       - name: Deploy to gh-pages branch
