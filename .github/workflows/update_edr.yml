@@ -29,11 +29,12 @@ jobs:
           python -c "
           import requests, json, os, re, html
 
-          def clean_text(val):
-              if not val: return ''
-              s = str(val)
+          def fix_mojibake(text):
+              if not text: return ''
+              s = str(text)
               try:
-                  s = s.encode('utf-8').decode('unicode-escape')
+                  if 'Ð' in s or 'Ñ' in s or 'Â' in s:
+                      s = s.encode('latin1').decode('utf-8')
               except Exception:
                   pass
               s = html.unescape(s)
@@ -52,7 +53,6 @@ jobs:
           
           response = requests.get(url, stream=True)
           os.makedirs('edr_chunks', exist_ok=True)
-          
           files = {}
           count = 0
 
@@ -68,13 +68,13 @@ jobs:
 
                   clean_rec = {
                       'id': eid,
-                      'name': clean_text(rec.get('name', '')),
-                      'short_name': clean_text(rec.get('short_name', '')),
-                      'status': clean_text(rec.get('status', '')) or 'Зареєстровано',
+                      'name': fix_mojibake(rec.get('name', '')),
+                      'short_name': fix_mojibake(rec.get('short_name', '')),
+                      'status': fix_mojibake(rec.get('status', '')) or 'Зареєстровано',
                       'registration_date': reg_date,
                       'registration_number': reg_num,
-                      'founders': [clean_text(f) for f in rec.get('founders', []) if clean_text(f)],
-                      'signers': [clean_text(s) for s in rec.get('signers', []) if clean_text(s)],
+                      'founders': [fix_mojibake(f) for f in rec.get('founders', []) if fix_mojibake(f)],
+                      'signers': [fix_mojibake(s) for s in rec.get('signers', []) if fix_mojibake(s)],
                       'tax_data': rec.get('tax_data', [])
                   }
                   
@@ -84,7 +84,7 @@ jobs:
                   
                   files[prefix].write(json.dumps(clean_rec, ensure_ascii=False) + '\n')
                   count += 1
-              except Exception as e:
+              except Exception:
                   pass
 
           for fp in files.values():
