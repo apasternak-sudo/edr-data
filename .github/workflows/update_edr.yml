@@ -2,14 +2,14 @@ name: Update EDR Data Registry
 
 on:
   schedule:
-    - cron: '0 3 * * 1' # Автозапуск щопонеділка о 03:00
-  workflow_dispatch: # Кнопка для ручного запуску у будь-який момент
+    - cron: '0 3 * * 1' # Запуск щопонеділка о 03:00
+  workflow_dispatch: # Дозволяє запуск вручну кнопкою
 
 jobs:
-  update-data:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -17,14 +17,30 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Process Registry Data
+      - name: Download and Process Registry
         run: |
-          python convert.py
+          python -c "
+          import json, os
+          if os.path.exists('edr_registry.ndjson'):
+              os.makedirs('edr_chunks', exist_ok=True)
+              files = {}
+              with open('edr_registry.ndjson', 'r', encoding='utf-8') as f:
+                  for line in f:
+                      if not line.strip(): continue
+                      try:
+                          rec = json.loads(line)
+                          eid = str(rec.get('id', '')).strip()
+                          if not eid: continue
+                          prefix = eid[:3] if len(eid) >= 3 else 'other'
+                          if prefix not in files:
+                              files[prefix] = open(f'edr_chunks/{prefix}.json', 'w', encoding='utf-8')
+                          files[prefix].write(line)
+                      except: pass
+              for fp in files.values(): fp.close()
+          "
 
-      - name: Commit & Push Changes
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add edr_registry.ndjson
-          git commit -m "Auto-update EDR data" || exit 0
-          git push
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
