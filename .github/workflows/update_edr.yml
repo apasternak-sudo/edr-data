@@ -2,8 +2,12 @@ name: Update EDR Data Registry
 
 on:
   schedule:
-    - cron: '0 3 * * 1' # Запуск щопонеділка о 03:00
-  workflow_dispatch: # Дозволяє запуск вручну кнопкою
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
 
 jobs:
   build-and-deploy:
@@ -17,30 +21,49 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Download and Process Registry
+      - name: Install requests
+        run: pip install requests
+
+      - name: Download Release Asset & Split into Chunks
         run: |
           python -c "
-          import json, os
-          if os.path.exists('edr_registry.ndjson'):
-              os.makedirs('edr_chunks', exist_ok=True)
-              files = {}
-              with open('edr_registry.ndjson', 'r', encoding='utf-8') as f:
-                  for line in f:
-                      if not line.strip(): continue
-                      try:
-                          rec = json.loads(line)
-                          eid = str(rec.get('id', '')).strip()
-                          if not eid: continue
-                          prefix = eid[:3] if len(eid) >= 3 else 'other'
-                          if prefix not in files:
-                              files[prefix] = open(f'edr_chunks/{prefix}.json', 'w', encoding='utf-8')
-                          files[prefix].write(line)
-                      except: pass
-              for fp in files.values(): fp.close()
+          import requests, json, os
+
+          url = 'https://github.com/apasternak-sudo/edr-data/releases/download/v1.0.0/edr_registry.ndjson'
+          print('Завантажуємо реєстр з Releases...')
+          
+          response = requests.get(url, stream=True)
+          os.makedirs('edr_chunks', exist_ok=True)
+          
+          files = {}
+          count = 0
+
+          for line in response.iter_lines():
+              if not line: continue
+              try:
+                  line_str = line.decode('utf-8')
+                  rec = json.loads(line_str)
+                  eid = str(rec.get('id', '')).strip()
+                  if not eid: continue
+                  
+                  prefix = eid[:3] if len(eid) >= 3 else 'other'
+                  if prefix not in files:
+                      files[prefix] = open(f'edr_chunks/{prefix}.json', 'w', encoding='utf-8')
+                  
+                  files[prefix].write(line_str + '\n')
+                  count += 1
+              except Exception as e:
+                  pass
+
+          for fp in files.values():
+              fp.close()
+
+          print(f'Успішно опрацьовано {count} записів та створено чанки!')
           "
 
-      - name: Deploy to GitHub Pages
+      - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .
+          publish_dir: ./edr_chunks
+          destination_dir: edr_chunks
