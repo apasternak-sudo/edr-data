@@ -7,84 +7,84 @@ import tempfile
 import requests
 from datetime import datetime, timedelta
 
-# 1. Формування посилання на ZIP-архів
-# Сторінка НАІС блокує парсинг HTML (403), тому генеруємо адреси або використовуємо стабільне посилання
+# 1. Отримання актуального посилання на ЄДР через API data.gov.ua
+DATA_GOV_API_URL = "https://data.gov.ua/api/3/action/package_show?id=1c7f3815-3259-45e0-b70e-26d0b09382b2"
+
+print("Шукаємо актуальне посилання на файл ЄДР через API data.gov.ua...")
+
 session = requests.Session()
 session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': '*/*',
-    'Referer': 'https://nais.gov.ua/'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 })
 
-# Спробуємо кілька варіантів посилань НАІС
-now = datetime.now()
-possible_urls = [
-    # Прямі посилання з датою (НАІС зазвичай викладає оновлення на початку місяця або року)
-    f"https://nais.gov.ua/files/general/{now.year}/{now.strftime('%m')}/01/17.1-EX_XML_EDR_UO_FULL.zip",
-    f"https://nais.gov.ua/files/general/{now.year}/01/01/17.1-EX_XML_EDR_UO_FULL.zip",
-    "https://nais.gov.ua/files/general/17.1-EX_XML_EDR_UO_FULL.zip"
-]
-
 zip_url = None
+
+try:
+    res = session.get(DATA_GOV_API_URL, timeout=30)
+    res.raise_for_status()
+    data = res.json()
+    
+    if data.get("success"):
+        resources = data.get("result", {}).get("resources", [])
+        # Шукаємо ресурс з ZIP-архівом для Юросіб (17.1 / UO)
+        for r in resources:
+            url = r.get("url", "")
+            name = r.get("name", "") + " " + r.get("description", "")
+            if url.endswith(".zip") and ("17.1" in url.lower() or "uo" in url.lower() or "юридичних" in name.lower()):
+                zip_url = url
+                break
+        
+        # Якщо за фільтрами не знайшли, беремо перший доступний ZIP у датасеті
+        if not zip_url:
+            for r in resources:
+                if r.get("url", "").endswith(".zip"):
+                    zip_url = r.get("url")
+                    break
+except Exception as e:
+    print(f"Помилка під час звернення до API data.gov.ua: {e}")
+
+# Резервний випадок: якщо API не повернув URL, беремо дзеркало
+if not zip_url:
+    zip_url = "https://data.gov.ua/dataset/1c7f3815-3259-45e0-b70e-26d0b09382b2/resource/6f881f1d-b5bb-43e8-8b01-52a129d2b270/download/17.1-ex_xml_edr_uo_full.zip"
+
+print(f"Знайдено актуальне посилання: {zip_url}")
+
+# 2. Завантаження ZIP-архіву
 temp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
 zip_path = os.path.join(temp_dir, "edr_dump.zip")
 extract_dir = os.path.join(temp_dir, "edr_xml")
 
-# Якщо файл вже завантажено на попередньому кроці — використовуємо його
-if os.path.exists(zip_path) and os.path.getsize(zip_path) > 1000000:
-    print(f"Знайдено раніше завантажений ZIP-архів у {zip_path}")
-else:
-    print("Завантажуємо архів з джерела НАІС...")
-    download_success = False
-    
-    # Спробуємо завантажити за згенерованими посиланнями
-    for url in possible_urls:
-        try:
-            print(f"Спроба завантаження за адресою: {url}")
-            res = session.get(url, stream=True, timeout=120)
-            if res.status_code == 200:
-                with open(zip_path, 'wb') as f:
-                    for chunk in res.iter_content(chunk_size=8192*16):
-                        f.write(chunk)
-                if zipfile.is_zipfile(zip_path):
-                    zip_url = url
-                    download_success = True
-                    print(f"Успішно завантажено ZIP з: {url}")
-                    break
-        except Exception as e:
-            print(f"Не вдалося завантажити з {url}: {e}")
+print(f"Завантаження архіву у {zip_path}...")
+with session.get(zip_url, stream=True, timeout=300) as r:
+    r.raise_for_status()
+    with open(zip_path, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=8192*16):
+            f.write(chunk)
 
-    # Якщо прямі посилання НАІС не спрацювали через 403/404, використати відкритий датасет/дзеркало
-    if not download_success:
-        fallback_url = "https://data.gov.ua/dataset/1c7f3815-3259-45e0-b70e-26d0b09382b2/resource/6f881f1d-b5bb-43e8-8b01-52a129d2b270/download/17.1-ex_xml_edr_uo_full.zip"
-        print(f"Спроба завантаження з резервного джерела: {fallback_url}")
-        res = session.get(fallback_url, stream=True, timeout=180)
-        res.raise_for_status()
-        with open(zip_path, 'wb') as f:
-            for chunk in res.iter_content(chunk_size=8192*16):
-                f.write(chunk)
+if not zipfile.is_zipfile(zip_path):
+    raise Exception("Завантажений файл не є дійсним ZIP-архівом!")
 
-print("Архів готовий. Розпакування ZIP...")
+print("Архів успішно завантажено. Розпакування ZIP...")
 
-# 2. Пошук та розпакування XML для Юридичних осіб (*_UO_*.xml)
+# 3. Розпакування XML для Юридичних осіб (*_UO_*.xml)
 uo_xml_path = None
 os.makedirs(extract_dir, exist_ok=True)
 
 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
     for file_info in zip_ref.infolist():
-        if file_info.filename.endswith('.xml') and ('_UO_' in file_info.filename or 'UO_FULL' in file_info.filename):
+        if file_info.filename.endswith('.xml') and ('_UO_' in file_info.filename or 'UO_FULL' in file_info.filename or '17.1' in file_info.filename):
             print(f"Знайдено XML файл юросіб: {file_info.filename}")
             zip_ref.extract(file_info, extract_dir)
             uo_xml_path = os.path.join(extract_dir, file_info.filename)
             break
 
 if not uo_xml_path or not os.path.exists(uo_xml_path):
-    raise Exception("XML-файл юридичних осіб (*_UO_*.xml) не знайдено в архіві!")
+    raise Exception("XML-файл юридичних осіб не знайдено всередині ZIP-архіву!")
 
 os.remove(zip_path)
-print("ZIP-архів видалено. Починаємо обробку XML...")
+print("ZIP-архів видалено для збереження дискового простору. Починаємо обробку XML...")
 
-# 3. Нормалізація та парсинг XML
+# 4. Нормалізація та парсинг XML
 def fix_mojibake(text):
     if not text: return ''
     s = str(text)
