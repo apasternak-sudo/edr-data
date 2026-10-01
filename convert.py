@@ -4,18 +4,64 @@ import json
 import html
 import zipfile
 import tempfile
+import requests
 from datetime import datetime, timedelta
 
-# Визначення шляху до завантаженого ZIP
+# 1. Знаходження актуального посилання на архів з ЄДР
+NAIS_PAGE_URL = "https://nais.gov.ua/m/ediniy-derjavniy-reestr-yuridichnih-osib-fizichnih-osib-pidpriemtsiv-ta-gromadskih-formuvan"
+
+print("Шукаємо актуальне посилання на архів на сайті НАІС...")
+
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://nais.gov.ua/'
+})
+
+zip_url = None
+
+try:
+    res = session.get(NAIS_PAGE_URL, timeout=30)
+    res.raise_for_status()
+
+    matches = re.findall(r'href=["\'](https?://[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
+    if not matches:
+        matches = re.findall(r'href=["\'](/[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
+        if matches:
+            zip_url = "https://nais.gov.ua" + matches[0]
+    else:
+        zip_url = matches[0]
+except Exception as e:
+    print(f"Попередження при парсингу сторінки: {e}")
+
+if not zip_url:
+    raise Exception("Не вдалося визначити посилання на ZIP-архів зі сторінки НАІС!")
+
+print(f"Знайдено посилання: {zip_url}")
+
+# 2. Завантаження ZIP-архіву
 temp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
 zip_path = os.path.join(temp_dir, "edr_dump.zip")
 extract_dir = os.path.join(temp_dir, "edr_xml")
 
-if not os.path.exists(zip_path):
-    raise Exception(f"ZIP-архів не знайдено за шляхом: {zip_path}")
+print(f"Завантаження архіву у {zip_path}...")
+with session.get(zip_url, stream=True, timeout=180) as r:
+    r.raise_for_status()
+    with open(zip_path, 'wb') as f:
+        for chunk in r.iter_content(chunk_size=8192*16):
+            f.write(chunk)
 
-print(f"Архів знайдено ({zip_path}). Розпакування ZIP...")
+# Перевірка чи дійсно це ZIP-файл
+if not zipfile.is_zipfile(zip_path):
+    with open(zip_path, 'r', encoding='utf-8', errors='ignore') as f:
+        preview = f.read(500)
+    raise Exception(f"Завантажений файл не є ZIP-архівом! Вміст початку файлу:\n{preview}")
 
+print("Архів успішно завантажено. Розпакування ZIP...")
+
+# 3. Пошук та розпакування XML для Юридичних осіб (*_UO_*.xml)
 uo_xml_path = None
 os.makedirs(extract_dir, exist_ok=True)
 
@@ -30,10 +76,10 @@ with zipfile.ZipFile(zip_path, 'r') as zip_ref:
 if not uo_xml_path or not os.path.exists(uo_xml_path):
     raise Exception("XML-файл юридичних осіб (*_UO_*.xml) не знайдено в архіві!")
 
-# Видаляємо ZIP після розпакування
 os.remove(zip_path)
 print("ZIP-архів видалено. Починаємо обробку XML...")
 
+# 4. Нормалізація та обробка даних
 def fix_mojibake(text):
     if not text: return ''
     s = str(text)
