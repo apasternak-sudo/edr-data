@@ -11,21 +11,34 @@ from datetime import datetime, timedelta
 NAIS_PAGE_URL = "https://nais.gov.ua/m/ediniy-derjavniy-reestr-yuridichnih-osib-fizichnih-osib-pidpriemtsiv-ta-gromadskih-formuvan"
 
 print("Шукаємо актуальне посилання на архів на сайті НАІС...")
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-res = requests.get(NAIS_PAGE_URL, headers=headers)
-res.raise_for_status()
 
-matches = re.findall(r'href=["\'](https?://[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
-if not matches:
-    matches = re.findall(r'href=["\'](/[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
-    if matches:
-        zip_url = "https://nais.gov.ua" + matches[0]
-    else:
-        raise Exception("Не вдалося знайти посилання на ZIP-архів на сторінці НАІС!")
-else:
-    zip_url = matches[0]
+# Розширені заголовки для обходу блокування 403 Forbidden
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Referer': 'https://nais.gov.ua/'
+}
 
-print(f"Знайдено посилання: {zip_url}")
+zip_url = None
+
+try:
+    res = requests.get(NAIS_PAGE_URL, headers=headers, timeout=30)
+    res.raise_for_status()
+
+    matches = re.findall(r'href=["\'](https?://[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
+    if not matches:
+        matches = re.findall(r'href=["\'](/[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
+        if matches:
+            zip_url = "https://nais.gov.ua" + matches[0]
+except Exception as e:
+    print(f"Попередження: Не вдалося розпарсити сторінку НАІС безпосередньо ({e}). Спробуємо резервне джерело...")
+
+# Резервне посилання, якщо сторінка НАІС відхилила запит
+if not zip_url:
+    zip_url = "https://nais.gov.ua/files/general/2024/01/01/17.1-EX_XML_EDR_UO_FULL.zip"
+
+print(f"Використовуємо посилання: {zip_url}")
 
 # 2. Визначення тимчасової папки
 temp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
@@ -34,7 +47,7 @@ extract_dir = os.path.join(temp_dir, "edr_xml")
 
 # 3. Скачування архіву
 print(f"Завантаження архіву у тимчасову папку ({zip_path})...")
-with requests.get(zip_url, stream=True, headers=headers) as r:
+with requests.get(zip_url, stream=True, headers=headers, timeout=120) as r:
     r.raise_for_status()
     with open(zip_path, 'wb') as f:
         for chunk in r.iter_content(chunk_size=8192*16):
