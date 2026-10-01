@@ -7,7 +7,7 @@ import tempfile
 import requests
 from datetime import datetime, timedelta
 
-# 1. Пошук датасету ЄДР через глобальний пошуковий API data.gov.ua
+# 1. Пошук датасету ЄДР через API data.gov.ua
 SEARCH_API_URL = "https://data.gov.ua/api/3/action/package_search?q=Єдиний+державний+реєстр+юридичних+осіб"
 
 print("Шукаємо актуальний датасет ЄДР на data.gov.ua...")
@@ -30,7 +30,6 @@ try:
             for r in resources:
                 url = r.get("url", "")
                 name = (r.get("name") or "") + " " + (r.get("description") or "")
-                # Шукаємо саме файл юросіб (*17.1* або *UO* або *юридичних*)
                 if url.lower().endswith(".zip") and ("17.1" in url.lower() or "uo" in url.lower() or "юридичних" in name.lower()):
                     zip_url = url
                     print(f"Знайдено ресурс у датасеті '{pkg.get('title')}': {zip_url}")
@@ -39,17 +38,6 @@ try:
                 break
 except Exception as e:
     print(f"Помилка під час пошуку через API: {e}")
-
-# Резервний пошук безпосередньо на сторінці NAIS (у разі проблеми з API)
-if not zip_url:
-    print("Спробуємо отримати пряме посилання з НАІС...")
-    try:
-        nais_res = session.get("https://nais.gov.ua/m/ediniy-derjavniy-reestr-yuridichnih-osib-fizichnih-osib-pidpriemtsiv-ta-gromadskih-formuvan", timeout=30)
-        matches = re.findall(r'href=["\'](https?://[^"\']+\.zip)["\']', nais_res.text, re.IGNORECASE)
-        if matches:
-            zip_url = matches[0]
-    except Exception as e:
-        print(f"Не вдалося розпаparsing сторінку НАІС: {e}")
 
 if not zip_url:
     raise Exception("Не вдалося знайти дійсне посилання на ZIP-архів ЄДР!")
@@ -73,20 +61,31 @@ if not zipfile.is_zipfile(zip_path):
 
 print("Архів успішно завантажено. Розпакування ZIP...")
 
-# 3. Розпакування XML Юридичних осіб
+# 3. Розпакування XML Юридичних осіб (підтримка будь-яких назв файлів)
 uo_xml_path = None
 os.makedirs(extract_dir, exist_ok=True)
 
 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-    for file_info in zip_ref.infolist():
-        if file_info.filename.endswith('.xml') and ('_UO_' in file_info.filename or 'UO_FULL' in file_info.filename or '17.1' in file_info.filename):
-            print(f"Знайдено XML файл юросіб: {file_info.filename}")
+    all_files = zip_ref.infolist()
+    
+    # Шукаємо XML файл за назвою чи вмістом імені
+    for file_info in all_files:
+        fn_lower = file_info.filename.lower()
+        if fn_lower.endswith('.xml') or '17.1' in fn_lower or 'edr' in fn_lower or 'uo' in fn_lower:
+            print(f"Знайдено XML файл для обробки: {file_info.filename}")
             zip_ref.extract(file_info, extract_dir)
             uo_xml_path = os.path.join(extract_dir, file_info.filename)
             break
+            
+    # Резервний випадок: якщо розширення відсутнє чи не стандартне, беремо перший файл
+    if not uo_xml_path and all_files:
+        target_file = all_files[0]
+        print(f"Беремо файл за замовчуванням: {target_file.filename}")
+        zip_ref.extract(target_file, extract_dir)
+        uo_xml_path = os.path.join(extract_dir, target_file.filename)
 
 if not uo_xml_path or not os.path.exists(uo_xml_path):
-    raise Exception("XML-файл юридичних осіб не знайдено всередині ZIP-архіву!")
+    raise Exception("Файл реєстру не знайдено всередині ZIP-архіву!")
 
 os.remove(zip_path)
 print("ZIP-архів видалено. Починаємо обробку XML...")
