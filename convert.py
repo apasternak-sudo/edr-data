@@ -4,76 +4,36 @@ import json
 import html
 import zipfile
 import tempfile
-import requests
 from datetime import datetime, timedelta
 
-# 1. Знаходження посилання на архів з ЄДР на сторінці НАІС
-NAIS_PAGE_URL = "https://nais.gov.ua/m/ediniy-derjavniy-reestr-yuridichnih-osib-fizichnih-osib-pidpriemtsiv-ta-gromadskih-formuvan"
-
-print("Шукаємо актуальне посилання на архів на сайті НАІС...")
-
-# Розширені заголовки для обходу блокування 403 Forbidden
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Referer': 'https://nais.gov.ua/'
-}
-
-zip_url = None
-
-try:
-    res = requests.get(NAIS_PAGE_URL, headers=headers, timeout=30)
-    res.raise_for_status()
-
-    matches = re.findall(r'href=["\'](https?://[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
-    if not matches:
-        matches = re.findall(r'href=["\'](/[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
-        if matches:
-            zip_url = "https://nais.gov.ua" + matches[0]
-except Exception as e:
-    print(f"Попередження: Не вдалося розпарсити сторінку НАІС безпосередньо ({e}). Спробуємо резервне джерело...")
-
-# Резервне посилання, якщо сторінка НАІС відхилила запит
-if not zip_url:
-    zip_url = "https://nais.gov.ua/files/general/2024/01/01/17.1-EX_XML_EDR_UO_FULL.zip"
-
-print(f"Використовуємо посилання: {zip_url}")
-
-# 2. Визначення тимчасової папки
+# Визначення шляху до завантаженого ZIP
 temp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
 zip_path = os.path.join(temp_dir, "edr_dump.zip")
 extract_dir = os.path.join(temp_dir, "edr_xml")
 
-# 3. Скачування архіву
-print(f"Завантаження архіву у тимчасову папку ({zip_path})...")
-with requests.get(zip_url, stream=True, headers=headers, timeout=120) as r:
-    r.raise_for_status()
-    with open(zip_path, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192*16):
-            f.write(chunk)
+if not os.path.exists(zip_path):
+    raise Exception(f"ZIP-архів не знайдено за шляхом: {zip_path}")
 
-print("Завантаження завершено. Розпакування ZIP...")
+print(f"Архів знайдено ({zip_path}). Розпакування ZIP...")
 
-# 4. Пошук та розпакування тільки XML для Юридичних осіб (*_UO_*.xml)
 uo_xml_path = None
 os.makedirs(extract_dir, exist_ok=True)
 
 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
     for file_info in zip_ref.infolist():
         if file_info.filename.endswith('.xml') and ('_UO_' in file_info.filename or 'UO_FULL' in file_info.filename):
-            print(f"Знайдено XML файл юросіб у архіві: {file_info.filename}")
+            print(f"Знайдено XML файл юросіб: {file_info.filename}")
             zip_ref.extract(file_info, extract_dir)
             uo_xml_path = os.path.join(extract_dir, file_info.filename)
             break
 
 if not uo_xml_path or not os.path.exists(uo_xml_path):
-    raise Exception("XML-файл юридичних осіб (*_UO_*.xml) не знайдено всередині ZIP-архіву!")
+    raise Exception("XML-файл юридичних осіб (*_UO_*.xml) не знайдено в архіві!")
 
+# Видаляємо ZIP після розпакування
 os.remove(zip_path)
-print("ZIP-архів видалено для економії місця. Починаємо обробку XML...")
+print("ZIP-архів видалено. Починаємо обробку XML...")
 
-# 5. Функції нормалізації та очищення
 def fix_mojibake(text):
     if not text: return ''
     s = str(text)
@@ -134,7 +94,6 @@ def parse_date(date_str):
         pass
     return None
 
-# Визначення кодування XML
 detected_encoding = 'cp1251'
 with open(uo_xml_path, 'rb') as test_f:
     raw_head = test_f.read(1000)
@@ -145,7 +104,6 @@ with open(uo_xml_path, 'rb') as test_f:
     elif b'encoding="utf-8"' in raw_head.lower() or b'encoding=\'utf-8\'' in raw_head.lower():
         detected_encoding = 'utf-8'
 
-# 6. Читання XML і ПРЯМА запис у ЧАНКИ
 chunks_dir = 'edr_chunks'
 os.makedirs(chunks_dir, exist_ok=True)
 files_dict = {}
