@@ -7,10 +7,10 @@ import tempfile
 import requests
 from datetime import datetime, timedelta
 
-# 1. Отримання актуального посилання на ЄДР через API data.gov.ua
-DATA_GOV_API_URL = "https://data.gov.ua/api/3/action/package_show?id=1c7f3815-3259-45e0-b70e-26d0b09382b2"
+# 1. Пошук датасету ЄДР через глобальний пошуковий API data.gov.ua
+SEARCH_API_URL = "https://data.gov.ua/api/3/action/package_search?q=Єдиний+державний+реєстр+юридичних+осіб"
 
-print("Шукаємо актуальне посилання на файл ЄДР через API data.gov.ua...")
+print("Шукаємо актуальний датасет ЄДР на data.gov.ua...")
 
 session = requests.Session()
 session.headers.update({
@@ -20,34 +20,41 @@ session.headers.update({
 zip_url = None
 
 try:
-    res = session.get(DATA_GOV_API_URL, timeout=30)
-    res.raise_for_status()
-    data = res.json()
-    
-    if data.get("success"):
-        resources = data.get("result", {}).get("resources", [])
-        # Шукаємо ресурс з ZIP-архівом для Юросіб (17.1 / UO)
-        for r in resources:
-            url = r.get("url", "")
-            name = r.get("name", "") + " " + r.get("description", "")
-            if url.endswith(".zip") and ("17.1" in url.lower() or "uo" in url.lower() or "юридичних" in name.lower()):
-                zip_url = url
-                break
+    res = session.get(SEARCH_API_URL, timeout=30)
+    if res.status_code == 200:
+        data = res.json()
+        packages = data.get("result", {}).get("results", [])
         
-        # Якщо за фільтрами не знайшли, беремо перший доступний ZIP у датасеті
-        if not zip_url:
+        for pkg in packages:
+            resources = pkg.get("resources", [])
             for r in resources:
-                if r.get("url", "").endswith(".zip"):
-                    zip_url = r.get("url")
+                url = r.get("url", "")
+                name = (r.get("name") or "") + " " + (r.get("description") or "")
+                # Шукаємо саме файл юросіб (*17.1* або *UO* або *юридичних*)
+                if url.lower().endswith(".zip") and ("17.1" in url.lower() or "uo" in url.lower() or "юридичних" in name.lower()):
+                    zip_url = url
+                    print(f"Знайдено ресурс у датасеті '{pkg.get('title')}': {zip_url}")
                     break
+            if zip_url:
+                break
 except Exception as e:
-    print(f"Помилка під час звернення до API data.gov.ua: {e}")
+    print(f"Помилка під час пошуку через API: {e}")
 
-# Резервний випадок: якщо API не повернув URL, беремо дзеркало
+# Резервний пошук безпосередньо на сторінці NAIS (у разі проблеми з API)
 if not zip_url:
-    zip_url = "https://data.gov.ua/dataset/1c7f3815-3259-45e0-b70e-26d0b09382b2/resource/6f881f1d-b5bb-43e8-8b01-52a129d2b270/download/17.1-ex_xml_edr_uo_full.zip"
+    print("Спробуємо отримати пряме посилання з НАІС...")
+    try:
+        nais_res = session.get("https://nais.gov.ua/m/ediniy-derjavniy-reestr-yuridichnih-osib-fizichnih-osib-pidpriemtsiv-ta-gromadskih-formuvan", timeout=30)
+        matches = re.findall(r'href=["\'](https?://[^"\']+\.zip)["\']', nais_res.text, re.IGNORECASE)
+        if matches:
+            zip_url = matches[0]
+    except Exception as e:
+        print(f"Не вдалося розпаparsing сторінку НАІС: {e}")
 
-print(f"Знайдено актуальне посилання: {zip_url}")
+if not zip_url:
+    raise Exception("Не вдалося знайти дійсне посилання на ZIP-архів ЄДР!")
+
+print(f"Фінальне посилання для завантаження: {zip_url}")
 
 # 2. Завантаження ZIP-архіву
 temp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
@@ -66,7 +73,7 @@ if not zipfile.is_zipfile(zip_path):
 
 print("Архів успішно завантажено. Розпакування ZIP...")
 
-# 3. Розпакування XML для Юридичних осіб (*_UO_*.xml)
+# 3. Розпакування XML Юридичних осіб
 uo_xml_path = None
 os.makedirs(extract_dir, exist_ok=True)
 
@@ -82,7 +89,7 @@ if not uo_xml_path or not os.path.exists(uo_xml_path):
     raise Exception("XML-файл юридичних осіб не знайдено всередині ZIP-архіву!")
 
 os.remove(zip_path)
-print("ZIP-архів видалено для збереження дискового простору. Починаємо обробку XML...")
+print("ZIP-архів видалено. Починаємо обробку XML...")
 
 # 4. Нормалізація та парсинг XML
 def fix_mojibake(text):
