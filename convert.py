@@ -7,61 +7,66 @@ import tempfile
 import requests
 from datetime import datetime, timedelta
 
-# 1. Знаходження актуального посилання на архів з ЄДР
-NAIS_PAGE_URL = "https://nais.gov.ua/m/ediniy-derjavniy-reestr-yuridichnih-osib-fizichnih-osib-pidpriemtsiv-ta-gromadskih-formuvan"
-
-print("Шукаємо актуальне посилання на архів на сайті НАІС...")
-
+# 1. Формування посилання на ZIP-архів
+# Сторінка НАІС блокує парсинг HTML (403), тому генеруємо адреси або використовуємо стабільне посилання
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept': '*/*',
     'Referer': 'https://nais.gov.ua/'
 })
 
+# Спробуємо кілька варіантів посилань НАІС
+now = datetime.now()
+possible_urls = [
+    # Прямі посилання з датою (НАІС зазвичай викладає оновлення на початку місяця або року)
+    f"https://nais.gov.ua/files/general/{now.year}/{now.strftime('%m')}/01/17.1-EX_XML_EDR_UO_FULL.zip",
+    f"https://nais.gov.ua/files/general/{now.year}/01/01/17.1-EX_XML_EDR_UO_FULL.zip",
+    "https://nais.gov.ua/files/general/17.1-EX_XML_EDR_UO_FULL.zip"
+]
+
 zip_url = None
-
-try:
-    res = session.get(NAIS_PAGE_URL, timeout=30)
-    res.raise_for_status()
-
-    matches = re.findall(r'href=["\'](https?://[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
-    if not matches:
-        matches = re.findall(r'href=["\'](/[^"\']+\.zip)["\']', res.text, re.IGNORECASE)
-        if matches:
-            zip_url = "https://nais.gov.ua" + matches[0]
-    else:
-        zip_url = matches[0]
-except Exception as e:
-    print(f"Попередження при парсингу сторінки: {e}")
-
-if not zip_url:
-    raise Exception("Не вдалося визначити посилання на ZIP-архів зі сторінки НАІС!")
-
-print(f"Знайдено посилання: {zip_url}")
-
-# 2. Завантаження ZIP-архіву
 temp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
 zip_path = os.path.join(temp_dir, "edr_dump.zip")
 extract_dir = os.path.join(temp_dir, "edr_xml")
 
-print(f"Завантаження архіву у {zip_path}...")
-with session.get(zip_url, stream=True, timeout=180) as r:
-    r.raise_for_status()
-    with open(zip_path, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192*16):
-            f.write(chunk)
+# Якщо файл вже завантажено на попередньому кроці — використовуємо його
+if os.path.exists(zip_path) and os.path.getsize(zip_path) > 1000000:
+    print(f"Знайдено раніше завантажений ZIP-архів у {zip_path}")
+else:
+    print("Завантажуємо архів з джерела НАІС...")
+    download_success = False
+    
+    # Спробуємо завантажити за згенерованими посиланнями
+    for url in possible_urls:
+        try:
+            print(f"Спроба завантаження за адресою: {url}")
+            res = session.get(url, stream=True, timeout=120)
+            if res.status_code == 200:
+                with open(zip_path, 'wb') as f:
+                    for chunk in res.iter_content(chunk_size=8192*16):
+                        f.write(chunk)
+                if zipfile.is_zipfile(zip_path):
+                    zip_url = url
+                    download_success = True
+                    print(f"Успішно завантажено ZIP з: {url}")
+                    break
+        except Exception as e:
+            print(f"Не вдалося завантажити з {url}: {e}")
 
-# Перевірка чи дійсно це ZIP-файл
-if not zipfile.is_zipfile(zip_path):
-    with open(zip_path, 'r', encoding='utf-8', errors='ignore') as f:
-        preview = f.read(500)
-    raise Exception(f"Завантажений файл не є ZIP-архівом! Вміст початку файлу:\n{preview}")
+    # Якщо прямі посилання НАІС не спрацювали через 403/404, використати відкритий датасет/дзеркало
+    if not download_success:
+        fallback_url = "https://data.gov.ua/dataset/1c7f3815-3259-45e0-b70e-26d0b09382b2/resource/6f881f1d-b5bb-43e8-8b01-52a129d2b270/download/17.1-ex_xml_edr_uo_full.zip"
+        print(f"Спроба завантаження з резервного джерела: {fallback_url}")
+        res = session.get(fallback_url, stream=True, timeout=180)
+        res.raise_for_status()
+        with open(zip_path, 'wb') as f:
+            for chunk in res.iter_content(chunk_size=8192*16):
+                f.write(chunk)
 
-print("Архів успішно завантажено. Розпакування ZIP...")
+print("Архів готовий. Розпакування ZIP...")
 
-# 3. Пошук та розпакування XML для Юридичних осіб (*_UO_*.xml)
+# 2. Пошук та розпакування XML для Юридичних осіб (*_UO_*.xml)
 uo_xml_path = None
 os.makedirs(extract_dir, exist_ok=True)
 
@@ -79,7 +84,7 @@ if not uo_xml_path or not os.path.exists(uo_xml_path):
 os.remove(zip_path)
 print("ZIP-архів видалено. Починаємо обробку XML...")
 
-# 4. Нормалізація та обробка даних
+# 3. Нормалізація та парсинг XML
 def fix_mojibake(text):
     if not text: return ''
     s = str(text)
