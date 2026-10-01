@@ -2,8 +2,8 @@ name: Update EDR Data Registry
 
 on:
   schedule:
-    - cron: '0 3 * * 1' # Запуск щопонеділка о 3:00 ночі
-  workflow_dispatch:     # Можливість ручного запуску
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,7 +16,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Очищення дискового простору на Runner
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -34,11 +33,33 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      # Запуск нашого скрипту convert.py
-      - name: Run Converter (Download, Extract, Clean and Chunk)
-        run: python convert.py
+      # Парсимо посилання за допомогою cURL (імітація повноцінного Chrome)
+      - name: Fetch ZIP link and Run Converter
+        run: |
+          NAIS_URL="https://nais.gov.ua/m/ediniy-derjavniy-reestr-yuridichnih-osib-fizichnih-osib-pidpriemtsiv-ta-gromadskih-formuvan"
+          
+          echo "Отримуємо сторінку НАІС через cURL..."
+          curl -sL -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
+            -H "Accept-Language: uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7" \
+            "$NAIS_URL" > nais_page.html
 
-      # Публікація готової папки edr_chunks у гілку gh-pages
+          # Витягуємо посилання на zip
+          ZIP_URL=$(grep -oI -E 'href="([^"]+\.zip)"' nais_page.html | head -n 1 | cut -d'"' -f2)
+
+          if [[ "$ZIP_URL" != http* ]]; then
+            ZIP_URL="https://nais.gov.ua$ZIP_URL"
+          fi
+
+          echo "Знайдено посилання: $ZIP_URL"
+
+          # Завантажуємо безпосередньо файл
+          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            -o "$RUNNER_TEMP/edr_dump.zip" "$ZIP_URL"
+
+          # Передаємо файл на обробку Python
+          python convert.py
+
       - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
         with:
