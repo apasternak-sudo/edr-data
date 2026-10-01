@@ -2,8 +2,8 @@ name: Update EDR Data Registry
 
 on:
   schedule:
-    - cron: '0 3 * * 1'
-  workflow_dispatch:
+    - cron: '0 3 * * 1' # Запуск щопонеділка о 3:00 ночі
+  workflow_dispatch:     # Можливість ручного запуску
 
 permissions:
   contents: write
@@ -16,6 +16,16 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Очищення дискового простору на Runner
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -24,75 +34,11 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Download & Split Registry
-        run: |
-          python -c "
-          import requests, json, os, re, html
+      # Запуск нашого скрипту convert.py
+      - name: Run Converter (Download, Extract, Clean and Chunk)
+        run: python convert.py
 
-          def fix_mojibake(text):
-              if not text: return ''
-              s = str(text)
-              try:
-                  if 'Ð' in s or 'Ñ' in s or 'Â' in s:
-                      s = s.encode('latin1').decode('utf-8')
-              except Exception:
-                  pass
-              s = html.unescape(s)
-              s = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', s)
-              return re.sub(r'\s+', ' ', s).strip()
-
-          def parse_reg(raw):
-              if not raw: return '', ''
-              parts = [p.strip() for p in str(raw).split(';') if p.strip()]
-              date = parts[0] if parts else ''
-              num = parts[-1] if len(parts) > 1 else ''
-              return date, num
-
-          url = 'https://github.com/apasternak-sudo/edr-data/releases/download/v1.0.0/edr_registry.ndjson'
-          print('Downloading and splitting registry...')
-          
-          response = requests.get(url, stream=True)
-          os.makedirs('edr_chunks', exist_ok=True)
-          files = {}
-          count = 0
-
-          for line in response.iter_lines():
-              if not line: continue
-              try:
-                  line_str = line.decode('utf-8', errors='ignore')
-                  rec = json.loads(line_str)
-                  eid = str(rec.get('id', '')).strip()
-                  if not eid: continue
-
-                  reg_date, reg_num = parse_reg(rec.get('registration', ''))
-
-                  clean_rec = {
-                      'id': eid,
-                      'name': fix_mojibake(rec.get('name', '')),
-                      'short_name': fix_mojibake(rec.get('short_name', '')),
-                      'status': fix_mojibake(rec.get('status', '')) or 'Зареєстровано',
-                      'registration_date': reg_date,
-                      'registration_number': reg_num,
-                      'founders': [fix_mojibake(f) for f in rec.get('founders', []) if fix_mojibake(f)],
-                      'signers': [fix_mojibake(s) for s in rec.get('signers', []) if fix_mojibake(s)],
-                      'tax_data': rec.get('tax_data', [])
-                  }
-                  
-                  prefix = eid[:3] if len(eid) >= 3 else 'other'
-                  if prefix not in files:
-                      files[prefix] = open(f'edr_chunks/{prefix}.json', 'w', encoding='utf-8')
-                  
-                  files[prefix].write(json.dumps(clean_rec, ensure_ascii=False) + '\n')
-                  count += 1
-              except Exception:
-                  pass
-
-          for fp in files.values():
-              fp.close()
-
-          print(f'Done! Successfully split {count} records.')
-          "
-
+      # Публікація готової папки edr_chunks у гілку gh-pages
       - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
         with:
